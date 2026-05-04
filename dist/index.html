@@ -85,6 +85,7 @@
           sslPrice: 0,
           lastUpdate: new Date().toISOString(),
         },
+        settingsDraft: null,
         modalOpen: false,
         editingClient: null,
       };
@@ -265,6 +266,9 @@
                 ? "bg-indigo-600 text-white"
                 : "hover:bg-slate-800 text-slate-400"),
             onclick: () => {
+              if (state.view === "settings" && id !== "settings") {
+                state.settingsDraft = null;
+              }
               state.view = id;
               render();
             },
@@ -272,6 +276,184 @@
           },
           [el("i", { "data-lucide": icon, class: "w-5 h-5" }), label]
         );
+      }
+
+      function fmtMoney(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return "$0";
+        const rounded = Math.round(n * 100) / 100;
+        return (
+          "$" +
+          rounded.toLocaleString("es-AR", {
+            minimumFractionDigits: rounded % 1 === 0 ? 0 : 2,
+            maximumFractionDigits: 2,
+          })
+        );
+      }
+
+      function hasService(client, key) {
+        const value = client?.[key];
+        if (!value) return false;
+        if (typeof value !== "string") return true;
+        return value.trim().length > 0;
+      }
+
+      function getDraftSettings() {
+        if (!state.settingsDraft) state.settingsDraft = { ...state.settings };
+        return state.settingsDraft;
+      }
+
+      function updatePerClientEstimate() {
+        const container = document.getElementById("per-client-estimate");
+        if (!container) return;
+        container.textContent = "";
+        container.appendChild(renderPerClientEstimate(getDraftSettings()));
+        if (window.lucide && typeof window.lucide.createIcons === "function") {
+          window.lucide.createIcons();
+        }
+      }
+
+      function computePerClientEstimate(draft) {
+        const reseller = Number(draft?.hostingResellerPrice || 0);
+        const domainPrice = Number(draft?.domainPrice || 0);
+        const sslPrice = Number(draft?.sslPrice || 0);
+
+        const hostingClients = state.clients.filter((c) => hasService(c, "hostingExpiry"));
+        const hostingCount = hostingClients.length;
+        const hostingShare = hostingCount > 0 ? reseller / hostingCount : 0;
+
+        const rows = state.clients
+          .map((client) => {
+            const includesHosting = hasService(client, "hostingExpiry");
+            const includesDomain = hasService(client, "domainExpiry");
+            const includesSSL = hasService(client, "sslExpiry");
+
+            const hosting = includesHosting ? hostingShare : 0;
+            const domain = includesDomain ? domainPrice : 0;
+            const ssl = includesSSL ? sslPrice : 0;
+            const total = hosting + domain + ssl;
+
+            return {
+              id: client.id,
+              name: client.name || "(sin nombre)",
+              includesHosting,
+              includesDomain,
+              includesSSL,
+              hosting,
+              domain,
+              ssl,
+              total,
+            };
+          })
+          .sort((a, b) => b.total - a.total);
+
+        return {
+          reseller,
+          domainPrice,
+          sslPrice,
+          hostingCount,
+          hostingShare,
+          rows,
+        };
+      }
+
+      function renderPerClientEstimate(draft) {
+        const est = computePerClientEstimate(draft);
+
+        const summary = el(
+          "div",
+          { class: "flex flex-col md:flex-row md:items-center md:justify-between gap-3" },
+          [
+            el("div", {}, [
+              el("h4", { class: "font-bold text-slate-900", text: "Estimación por cliente" }),
+              el("p", {
+                class: "text-sm text-slate-500",
+                text:
+                  "Hosting anual se reparte entre clientes con hosting. Dominio/SSL se suman solo si el cliente los tiene cargados.",
+              }),
+            ]),
+            el(
+              "div",
+              { class: "bg-slate-50 border border-slate-100 rounded-xl p-3" },
+              [
+                el("p", {
+                  class: "text-[10px] text-slate-400 uppercase font-bold tracking-widest",
+                  text: "Hosting por cliente",
+                }),
+                el("p", {
+                  class: "font-mono text-lg font-bold text-indigo-600",
+                  text:
+                    est.hostingCount > 0
+                      ? fmtMoney(est.hostingShare)
+                      : "$0",
+                }),
+                el("p", {
+                  class: "text-[11px] text-slate-400",
+                  text: `${est.hostingCount} cliente(s) con hosting`,
+                }),
+              ]
+            ),
+          ]
+        );
+
+        if (est.rows.length === 0) {
+          return el("div", { class: "space-y-3" }, [
+            summary,
+            el(
+              "div",
+              {
+                class:
+                  "bg-amber-50 text-amber-800 p-4 rounded-xl border border-amber-100",
+              },
+              "Todavía no hay clientes cargados. Agregá clientes para ver el cálculo."
+            ),
+          ]);
+        }
+
+        const table = el("div", { class: "overflow-auto" });
+        const tbl = el(
+          "table",
+          { class: "w-full text-sm" },
+          [
+            el("thead", {},
+              el("tr", { class: "text-left text-slate-400" }, [
+                el("th", { class: "py-2 pr-4", text: "Cliente" }),
+                el("th", { class: "py-2 pr-4", text: "Hosting" }),
+                el("th", { class: "py-2 pr-4", text: "Dominio" }),
+                el("th", { class: "py-2 pr-4", text: "SSL" }),
+                el("th", { class: "py-2", text: "Total anual" }),
+              ])
+            ),
+            el(
+              "tbody",
+              {},
+              est.rows.map((r) =>
+                el("tr", { class: "border-t border-slate-100" }, [
+                  el("td", { class: "py-2 pr-4 font-medium text-slate-800", text: r.name }),
+                  el("td", {
+                    class: "py-2 pr-4 font-mono text-slate-700",
+                    text: r.includesHosting ? fmtMoney(r.hosting) : "-",
+                  }),
+                  el("td", {
+                    class: "py-2 pr-4 font-mono text-slate-700",
+                    text: r.includesDomain ? fmtMoney(r.domain) : "-",
+                  }),
+                  el("td", {
+                    class: "py-2 pr-4 font-mono text-slate-700",
+                    text: r.includesSSL ? fmtMoney(r.ssl) : "-",
+                  }),
+                  el("td", {
+                    class: "py-2 font-mono font-bold text-slate-900",
+                    text: fmtMoney(r.total),
+                  }),
+                ])
+              )
+            ),
+          ]
+        );
+        table.appendChild(tbl);
+
+        return el("div", { class: "space-y-4" }, [summary, table]);
       }
 
       function renderSidebar() {
@@ -675,6 +857,7 @@
       }
 
       function renderSettings() {
+        const draft = getDraftSettings();
         const form = el(
           "form",
           {
@@ -687,17 +870,29 @@
               inputField({
                 name: "reseller",
                 label: "Hosting Reseller (Anual)",
-                value: state.settings.hostingResellerPrice,
+                value: draft.hostingResellerPrice,
+                oninput: (value) => {
+                  draft.hostingResellerPrice = value;
+                  updatePerClientEstimate();
+                },
               }),
               inputField({
                 name: "domain",
                 label: "Dominio .com / .ar (Anual)",
-                value: state.settings.domainPrice,
+                value: draft.domainPrice,
+                oninput: (value) => {
+                  draft.domainPrice = value;
+                  updatePerClientEstimate();
+                },
               }),
               inputField({
                 name: "ssl",
                 label: "Certificado SSL (Anual)",
-                value: state.settings.sslPrice,
+                value: draft.sslPrice,
+                oninput: (value) => {
+                  draft.sslPrice = value;
+                  updatePerClientEstimate();
+                },
               }),
             ]),
             el(
@@ -743,10 +938,15 @@
               }),
             ]
           ),
+          el(
+            "div",
+            { class: "bg-white p-6 rounded-2xl shadow-sm border border-slate-200" },
+            el("div", { id: "per-client-estimate" }, renderPerClientEstimate(draft))
+          ),
         ]);
       }
 
-      function inputField({ name, label, value }) {
+      function inputField({ name, label, value, oninput }) {
         const wrapper = el("div");
         wrapper.appendChild(
           el("label", {
@@ -762,6 +962,11 @@
             class:
               "w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none",
             placeholder: "0.00",
+            oninput: (e) => {
+              if (typeof oninput !== "function") return;
+              const n = Number(e.target.value || 0);
+              oninput(Number.isFinite(n) ? n : 0);
+            },
           })
         );
         return wrapper;
@@ -1009,16 +1214,19 @@
           alert("Firestore no está inicializado. Revisa la configuración de Firebase.");
           return;
         }
-        const fd = new FormData(e.target);
+        const draft = getDraftSettings();
         const payload = {
-          hostingResellerPrice: Number(fd.get("reseller") || 0),
-          domainPrice: Number(fd.get("domain") || 0),
-          sslPrice: Number(fd.get("ssl") || 0),
+          hostingResellerPrice: Number(draft.hostingResellerPrice || 0),
+          domainPrice: Number(draft.domainPrice || 0),
+          sslPrice: Number(draft.sslPrice || 0),
           lastUpdate: new Date().toISOString(),
         };
 
         // setDoc para crear el doc si no existe
         await setDoc(settingsDocRef(), payload, { merge: true });
+
+        state.settingsDraft = { ...state.settingsDraft, ...payload };
+        updatePerClientEstimate();
       }
 
       render();
@@ -1072,6 +1280,9 @@
             (snap) => {
               if (snap.exists()) {
                 state.settings = { ...state.settings, ...snap.data() };
+                if (state.view !== "settings" || !state.settingsDraft) {
+                  state.settingsDraft = { ...state.settings };
+                }
                 render();
               }
             },
