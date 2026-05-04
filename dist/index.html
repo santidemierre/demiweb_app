@@ -77,7 +77,7 @@
 
       const state = {
         user: null,
-        view: "dashboard", // dashboard | clients | reseller | settings
+        view: "dashboard", // dashboard | clients | settings
         clients: [],
         settings: {
           hostingResellerPrice: 0,
@@ -478,7 +478,6 @@
             el("div", { class: "flex flex-col gap-2" }, [
               navButton({ id: "dashboard", label: "Dashboard", icon: "layout-dashboard" }),
               navButton({ id: "clients", label: "Mis Clientes", icon: "users" }),
-              navButton({ id: "reseller", label: "Hosting Revendedor", icon: "server" }),
               navButton({ id: "settings", label: "Precios y Config.", icon: "settings" }),
             ]),
             el(
@@ -520,7 +519,6 @@
 
         if (state.view === "dashboard") container.appendChild(renderDashboard());
         if (state.view === "clients") container.appendChild(renderClients());
-        if (state.view === "reseller") container.appendChild(renderReseller());
         if (state.view === "settings") container.appendChild(renderSettings());
 
         return container;
@@ -787,74 +785,6 @@
         ]);
       }
 
-      function renderReseller() {
-        return el(
-          "div",
-          { class: "max-w-4xl mx-auto py-10 space-y-8 text-center" },
-          el(
-            "div",
-            {
-              class:
-                "bg-white p-12 rounded-[2rem] shadow-xl border border-slate-200",
-            },
-            [
-              el(
-                "div",
-                {
-                  class:
-                    "w-20 h-20 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6",
-                },
-                el("i", { "data-lucide": "calendar-clock", class: "w-10 h-10" })
-              ),
-              el("h2", {
-                class: "text-4xl font-black text-slate-900 mb-4",
-                text: "Renovación Revendedor",
-              }),
-              el("p", {
-                class: "text-slate-500 max-w-md mx-auto mb-8",
-                text:
-                  "Recordatorio: Tu hosting reseller de DonWeb vence anualmente en el mes de Abril.",
-              }),
-              el(
-                "div",
-                {
-                  class:
-                    "bg-slate-50 p-6 rounded-2xl inline-block border border-slate-100",
-                },
-                [
-                  el("p", {
-                    class:
-                      "text-sm text-slate-400 uppercase font-bold tracking-widest mb-1",
-                    text: "Costo Estimado",
-                  }),
-                  el("p", {
-                    class: "text-5xl font-mono font-bold text-indigo-600",
-                    text: `$${state.settings.hostingResellerPrice || 0}`,
-                  }),
-                ]
-              ),
-              el(
-                "div",
-                {
-                  class:
-                    "mt-12 p-4 bg-amber-50 rounded-xl border border-amber-100 flex items-start gap-4 text-left",
-                },
-                [
-                  el("i", {
-                    "data-lucide": "alert-triangle",
-                    class: "w-5 h-5 text-amber-500 shrink-0 mt-1",
-                  }),
-                  el("p", {
-                    class: "text-sm text-amber-800",
-                    text:
-                      "Asegúrate de tener fondos disponibles para la primera quincena de abril. DonWeb suele enviar la factura 10 días antes del vencimiento.",
-                  }),
-                ]
-              ),
-            ]
-          )
-        );
-      }
 
       function renderSettings() {
         const draft = getDraftSettings();
@@ -920,28 +850,43 @@
           ]
         );
 
-        return el("div", { class: "max-w-2xl space-y-8" }, [
-          el("header", {}, [
-            el("h2", { class: "text-2xl font-bold text-slate-900", text: "Precios y Configuración" }),
-            el("p", { class: "text-slate-500", text: "Ajusta los valores de mercado para tus estimaciones." }),
+        const note = el(
+          "div",
+          { class: "bg-indigo-50 p-6 rounded-2xl border border-indigo-100" },
+          [
+            el("h4", { class: "font-bold text-indigo-900 mb-2", text: "Nota sobre precios automáticos" }),
+            el("p", {
+              class: "text-sm text-indigo-700 leading-relaxed",
+              text:
+                "Debido a que DonWeb no expone una API pública de precios, los valores deben actualizarse manualmente aquí.",
+            }),
+          ]
+        );
+
+        const estimateCard = el(
+          "div",
+          { class: "bg-white p-6 rounded-2xl shadow-sm border border-slate-200" },
+          el("div", { id: "per-client-estimate" }, renderPerClientEstimate(draft))
+        );
+
+        return el("div", { class: "space-y-6" }, [
+          el("header", { class: "max-w-4xl" }, [
+            el("h2", {
+              class: "text-2xl font-bold text-slate-900",
+              text: "Precios y Configuración",
+            }),
+            el("p", {
+              class: "text-slate-500",
+              text: "Ajusta los valores de mercado para tus estimaciones.",
+            }),
           ]),
-          form,
           el(
             "div",
-            { class: "bg-indigo-50 p-6 rounded-2xl border border-indigo-100" },
+            { class: "grid grid-cols-1 lg:grid-cols-3 gap-6 items-start" },
             [
-              el("h4", { class: "font-bold text-indigo-900 mb-2", text: "Nota sobre precios automáticos" }),
-              el("p", {
-                class: "text-sm text-indigo-700 leading-relaxed",
-                text:
-                  "Debido a que DonWeb no expone una API pública de precios, los valores deben actualizarse manualmente aquí.",
-              }),
+              el("div", { class: "lg:col-span-2 space-y-6" }, [form, estimateCard]),
+              el("div", { class: "space-y-6" }, [note]),
             ]
-          ),
-          el(
-            "div",
-            { class: "bg-white p-6 rounded-2xl shadow-sm border border-slate-200" },
-            el("div", { id: "per-client-estimate" }, renderPerClientEstimate(draft))
           ),
         ]);
       }
