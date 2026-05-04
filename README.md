@@ -13,44 +13,46 @@ Aplicación web para gestionar vencimientos de dominios, hosting y certificados 
 
 ## Requisitos
 
-- Node.js 18+ 
 - Una cuenta de Firebase con un proyecto configurado
+- (Recomendado) Un servidor local (Firebase suele requerir `http://localhost` o `https`)
 
 ## Instalación
 
-1. Instala las dependencias:
-```bash
-npm install
-```
+No hay build ni React: toda la app vive en un solo archivo: `index.html`.
 
-2. Configura Firebase:
-   - Ve a [Firebase Console](https://console.firebase.google.com)
-   - Crea un nuevo proyecto o usa uno existente
-   - En "Configuración del proyecto", copia los datos de configuración
-   - Abre `.env.local` y pega tu configuración:
+1. Configura Firebase:
+  - Ve a [Firebase Console](https://console.firebase.google.com)
+  - En "Configuración del proyecto", copia los datos de configuración
+  - Abre `index.html` y completa `window.__APP_CONFIG__.firebaseConfig`.
 
-```env
-VITE_FIREBASE_CONFIG='{"apiKey":"tu_api_key","authDomain":"tu_auth_domain","projectId":"tu_project_id","storageBucket":"tu_storage_bucket","messagingSenderId":"tu_messaging_sender_id","appId":"tu_app_id"}'
-VITE_APP_ID="vencimientos-web-app"
-```
+2. (Opcional) Cambia el `appId` dentro de `window.__APP_CONFIG__` si querés separar datos.
 
 3. Configuración de Firestore:
    - En Firebase Console, crea una base de datos Firestore
    - Establece las reglas de seguridad (ver sección abajo)
    - Crea la estructura de colecciones como se detalla en el código
 
-## Comandos
+## Ejecutar
+
+Firebase normalmente no funciona correctamente abriendo el archivo con `file://`.
+
+Levanta un servidor local y abre la URL en el navegador:
 
 ```bash
-# Desarrollo (http://localhost:5173)
-npm run dev
-
-# Build para producción
-npm run build
-
-# Preview de producción
-npm run preview
+python3 -m http.server 5173
+# luego abrir http://localhost:5173
 ```
+
+## Deploy en Netlify
+
+Este repo es un **sitio estático** (no hay build).
+
+En Netlify:
+
+- Build command: *(vacío)*
+- Publish directory: `.` (la raíz del repo)
+
+El archivo [_redirects](_redirects) ya está en la raíz para que Netlify haga fallback a `index.html`.
 
 ## Estructura de Firestore
 
