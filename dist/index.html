@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebManager - Gestor de Vencimientos</title>
+
+    <!-- Tailwind (sin build) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Lucide icons (sin React) -->
+    <script src="https://unpkg.com/lucide@0.263.1/dist/umd/lucide.min.js"></script>
+
+    <style>
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+          Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: #f8fafc;
+        color: #0f172a;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!--
+      CONFIGURACIÓN (todo queda dentro de este archivo)
+      1) Reemplazá firebaseConfig con los valores de tu Firebase Console.
+      2) Si querés, cambiá appId para apuntar a otra rama de datos.
+    -->
+    <script>
+      window.__APP_CONFIG__ = {
+        firebaseConfig: {
+          apiKey: "AIzaSyDDygJzY1rTXTxXPhHbFVenrCUb3w9GLz8",
+          authDomain: "gestor-vencimientos-dbc30.firebaseapp.com",
+          projectId: "gestor-vencimientos-dbc30",
+          storageBucket: "gestor-vencimientos-dbc30.firebasestorage.app",
+          messagingSenderId: "324281207912",
+          appId: "1:324281207912:web:019806c305e1741917ffdd",
+        },
+        appId: "vencimientos-web-app",
+        // Opcional: si querés un token custom (ej: entorno controlado)
+        initialAuthToken: "",
+      };
+    </script>
+
+    <div id="app"></div>
+
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js";
+      import {
+        getFirestore,
+        collection,
+        addDoc,
+        onSnapshot,
+        doc,
+        setDoc,
+        updateDoc,
+        deleteDoc,
+      } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-firestore.js";
+      import {
+        getAuth,
+        signInAnonymously,
+        signInWithCustomToken,
+        onAuthStateChanged,
+      } from "https://www.gstatic.com/firebasejs/10.0.0/firebase-auth.js";
+
+      const root = document.getElementById("app");
+
+      const config = window.__APP_CONFIG__ || {};
+      const firebaseConfig = config.firebaseConfig || null;
+      const appId = config.appId || "vencimientos-web-app";
+      const initialAuthToken = config.initialAuthToken || "";
+
+      const state = {
+        user: null,
+        view: "dashboard", // dashboard | clients | reseller | settings
+        clients: [],
+        settings: {
+          hostingResellerPrice: 0,
+          domainPrice: 0,
+          sslPrice: 0,
+          lastUpdate: new Date().toISOString(),
+        },
+        modalOpen: false,
+        editingClient: null,
+      };
+
+      const DAY_MS = 1000 * 60 * 60 * 24;
+
+      function isValidFirebaseConfig(obj) {
+        return !!(obj && typeof obj === "object" && obj.apiKey);
+      }
+
+      function fmtDate(value) {
+        if (!value) return "N/A";
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return "N/A";
+        return d.toLocaleDateString();
+      }
+
+      function fmtDateTime(value) {
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return "-";
+        return d.toLocaleString();
+      }
+
+      function computeAlerts(clients) {
+        const today = new Date();
+        const threshold = 20;
+
+        const items = [];
+        for (const client of clients) {
+          const candidates = [
+            { type: "Dominio", date: client.domainExpiry },
+            { type: "Hosting", date: client.hostingExpiry },
+            { type: "SSL", date: client.sslExpiry },
+          ];
+
+          for (const item of candidates) {
+            if (!item.date) continue;
+            const expiryDate = new Date(item.date);
+            if (Number.isNaN(expiryDate.getTime())) continue;
+            const diffDays = Math.ceil((expiryDate - today) / DAY_MS);
+            if (diffDays <= threshold && diffDays >= -5) {
+              items.push({
+                ...item,
+                diffDays,
+                clientName: client.name || "(sin nombre)",
+                clientId: client.id,
+              });
+            }
+          }
+        }
+
+        items.sort((a, b) => a.diffDays - b.diffDays);
+        return items;
+      }
+
+      function el(tag, attrs = {}, children = []) {
+        const node = document.createElement(tag);
+        for (const [key, value] of Object.entries(attrs)) {
+          if (value == null) continue;
+          if (key === "class") node.className = value;
+          else if (key === "text") node.textContent = value;
+          else if (key.startsWith("on") && typeof value === "function") {
+            node.addEventListener(key.slice(2).toLowerCase(), value);
+          } else {
+            node.setAttribute(key, value);
+          }
+        }
+        for (const child of Array.isArray(children) ? children : [children]) {
+          if (child == null) continue;
+          if (typeof child === "string") node.appendChild(document.createTextNode(child));
+          else node.appendChild(child);
+        }
+        return node;
+      }
+
+      function render() {
+        root.textContent = "";
+
+        if (location.protocol === "file:") {
+          root.appendChild(
+            el(
+              "div",
+              {
+                class:
+                  "min-h-screen bg-slate-50 flex items-center justify-center p-6",
+              },
+              el(
+                "div",
+                {
+                  class:
+                    "max-w-2xl w-full bg-white p-8 rounded-3xl shadow-xl border border-slate-200",
+                },
+                [
+                  el("h1", {
+                    class: "text-2xl font-bold text-slate-900 mb-3",
+                    text: "Abriste el archivo con file://",
+                  }),
+                  el("p", {
+                    class: "text-slate-600 mb-4",
+                    text:
+                      "Firebase (Auth/Firestore) normalmente requiere https o localhost. Levantá un servidor local y abrilo desde http://localhost.",
+                  }),
+                  el("pre", {
+                    class:
+                      "bg-slate-900 text-slate-100 p-4 rounded-xl overflow-auto text-sm",
+                    text: "python3 -m http.server 5173\n# luego abrir http://localhost:5173",
+                  }),
+                ]
+              )
+            )
+          );
+          return;
+        }
+
+        if (!isValidFirebaseConfig(firebaseConfig)) {
+          root.appendChild(
+            el(
+              "div",
+              {
+                class:
+                  "min-h-screen bg-slate-50 flex items-center justify-center p-6",
+              },
+              el(
+                "div",
+                {
+                  class:
+                    "max-w-2xl w-full bg-white p-8 rounded-3xl shadow-xl border border-slate-200",
+                },
+                [
+                  el("h1", {
+                    class: "text-2xl font-bold text-slate-900 mb-4",
+                    text: "Falta configuración de Firebase",
+                  }),
+                  el("p", {
+                    class: "text-slate-600 mb-4",
+                    text:
+                      "Editá este mismo index.html y completá window.__APP_CONFIG__.firebaseConfig con los datos de tu Firebase Console.",
+                  }),
+                  el("p", {
+                    class: "text-sm text-slate-500",
+                    text:
+                      "Tip: necesitás al menos apiKey, authDomain, projectId y appId.",
+                  }),
+                ]
+              )
+            )
+          );
+          return;
+        }
+
+        // Shell
+        const sidebar = renderSidebar();
+        const main = renderMain();
+        const modal = state.modalOpen ? renderClientModal() : null;
+
+        const layout = el(
+          "div",
+          { class: "min-h-screen bg-slate-50 flex flex-col md:flex-row" },
+          [sidebar, main]
+        );
+        root.appendChild(layout);
+        if (modal) root.appendChild(modal);
+
+        // render lucide icons
+        if (window.lucide && typeof window.lucide.createIcons === "function") {
+          window.lucide.createIcons();
+        }
+      }
+
+      function navButton({ id, label, icon }) {
+        const active = state.view === id;
+        return el(
+          "button",
+          {
+            class:
+              "flex items-center gap-3 p-3 rounded-lg transition " +
+              (active
+                ? "bg-indigo-600 text-white"
+                : "hover:bg-slate-800 text-slate-400"),
+            onclick: () => {
+              state.view = id;
+              render();
+            },
+            type: "button",
+          },
+          [el("i", { "data-lucide": icon, class: "w-5 h-5" }), label]
+        );
+      }
+
+      function renderSidebar() {
+        return el(
+          "nav",
+          {
+            class:
+              "w-full md:w-64 bg-slate-900 text-white p-6 flex flex-col gap-8",
+          },
+          [
+            el("div", { class: "flex items-center gap-3" }, [
+              el(
+                "div",
+                { class: "bg-indigo-600 p-2 rounded-lg" },
+                el("i", { "data-lucide": "globe", class: "w-6 h-6" })
+              ),
+              el("h1", {
+                class: "text-xl font-bold tracking-tight",
+                text: "WebManager",
+              }),
+            ]),
+            el("div", { class: "flex flex-col gap-2" }, [
+              navButton({ id: "dashboard", label: "Dashboard", icon: "layout-dashboard" }),
+              navButton({ id: "clients", label: "Mis Clientes", icon: "users" }),
+              navButton({ id: "reseller", label: "Hosting Revendedor", icon: "server" }),
+              navButton({ id: "settings", label: "Precios y Config.", icon: "settings" }),
+            ]),
+            el(
+              "div",
+              {
+                class:
+                  "mt-auto pt-6 border-t border-slate-800 text-xs text-slate-500",
+              },
+              [
+                el("div", { text: "ID de Usuario:" }),
+                el("div", {
+                  class: "break-all mt-1",
+                  text: state.user?.uid || "-",
+                }),
+              ]
+            ),
+          ]
+        );
+      }
+
+      function renderMain() {
+        const container = el("main", {
+          class: "flex-1 p-4 md:p-8 overflow-y-auto",
+        });
+
+        if (!state.user) {
+          container.appendChild(
+            el(
+              "div",
+              {
+                class:
+                  "flex items-center justify-center h-[60vh] bg-slate-900 text-white rounded-2xl",
+              },
+              "Cargando aplicación..."
+            )
+          );
+          return container;
+        }
+
+        if (state.view === "dashboard") container.appendChild(renderDashboard());
+        if (state.view === "clients") container.appendChild(renderClients());
+        if (state.view === "reseller") container.appendChild(renderReseller());
+        if (state.view === "settings") container.appendChild(renderSettings());
+
+        return container;
+      }
+
+      function renderDashboard() {
+        const alerts = computeAlerts(state.clients);
+
+        const header = el("header", { class: "flex justify-between items-end" }, [
+          el("div", {}, [
+            el("h2", {
+              class: "text-3xl font-bold text-slate-900",
+              text: "Bienvenido, Desarrollador",
+            }),
+            el("p", { class: "text-slate-500", text: "Control de estados y alertas críticas." }),
+          ]),
+          el(
+            "div",
+            {
+              class:
+                "text-right bg-white p-3 rounded-xl border border-slate-200 shadow-sm",
+            },
+            [
+              el("span", {
+                class: "text-xs font-semibold text-slate-400 uppercase",
+                text: "Hoy",
+              }),
+              el("p", {
+                class: "font-mono text-lg",
+                text: new Date().toLocaleDateString("es-AR"),
+              }),
+            ]
+          ),
+        ]);
+
+        const alertsTitle = el("h3", { class: "text-lg font-semibold mb-4 flex items-center gap-2" }, [
+          el("i", { "data-lucide": "alert-triangle", class: "w-5 h-5 text-amber-500" }),
+          "Alertas Próximas (Menos de 20 días)",
+        ]);
+
+        const alertsBody = el("div");
+        if (alerts.length > 0) {
+          const grid = el("div", {
+            class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4",
+          });
+
+          for (const alert of alerts) {
+            const badgeClass =
+              alert.diffDays < 7
+                ? "bg-rose-100 text-rose-700"
+                : "bg-amber-100 text-amber-700";
+            const borderClass = alert.diffDays < 7 ? "border-rose-500" : "border-amber-500";
+
+            const card = el(
+              "div",
+              {
+                class:
+                  "p-5 rounded-2xl border-l-4 shadow-sm bg-white " + borderClass,
+              },
+              [
+                el("div", { class: "flex justify-between items-start mb-2" }, [
+                  el("span", {
+                    class:
+                      "px-2 py-1 rounded-md text-xs font-bold uppercase " + badgeClass,
+                    text: `Vence en ${alert.diffDays} días`,
+                  }),
+                  el(
+                    "button",
+                    {
+                      class: "text-slate-400 hover:text-indigo-600 transition",
+                      title: "Enviar recordatorio manual",
+                      type: "button",
+                      onclick: () => sendAlertEmail(alert),
+                    },
+                    el("i", { "data-lucide": "mail", class: "w-[18px] h-[18px]" })
+                  ),
+                ]),
+                el("h4", {
+                  class: "font-bold text-slate-800 text-lg",
+                  text: alert.clientName,
+                }),
+                el("p", { class: "text-slate-600 flex items-center gap-2 mt-1" }, [
+                  el("i", {
+                    "data-lucide":
+                      alert.type === "Dominio"
+                        ? "globe"
+                        : alert.type === "Hosting"
+                          ? "server"
+                          : "shield-check",
+                    class: "w-[14px] h-[14px]",
+                  }),
+                  `${alert.type}: ${fmtDate(alert.date)}`,
+                ]),
+              ]
+            );
+
+            grid.appendChild(card);
+          }
+
+          alertsBody.appendChild(grid);
+        } else {
+          alertsBody.appendChild(
+            el(
+              "div",
+              {
+                class:
+                  "bg-emerald-50 text-emerald-700 p-8 rounded-2xl border border-emerald-100 text-center",
+              },
+              el("p", {
+                class: "font-medium",
+                text: "¡Todo al día! No hay vencimientos próximos detectados.",
+              })
+            )
+          );
+        }
+
+        const summary = el("div", { class: "grid grid-cols-1 md:grid-cols-4 gap-4" }, [
+          el(
+            "div",
+            { class: "bg-white p-6 rounded-2xl shadow-sm border border-slate-200" },
+            [
+              el("p", { class: "text-slate-500 text-sm", text: "Total Clientes" }),
+              el("p", {
+                class: "text-3xl font-bold text-slate-900",
+                text: String(state.clients.length),
+              }),
+            ]
+          ),
+          el(
+            "div",
+            { class: "bg-white p-6 rounded-2xl shadow-sm border border-slate-200" },
+            [
+              el("p", { class: "text-slate-500 text-sm", text: "Próximo Abril" }),
+              el("p", {
+                class: "text-3xl font-bold text-indigo-600",
+                text: `$${state.settings.hostingResellerPrice || 0}`,
+              }),
+              el("p", {
+                class: "text-[10px] text-slate-400 uppercase mt-1",
+                text: "Hosting Revendedor",
+              }),
+            ]
+          ),
+        ]);
+
+        const wrapper = el("div", { class: "space-y-8" }, [
+          header,
+          el("section", {}, [alertsTitle, alertsBody]),
+          summary,
+        ]);
+
+        return wrapper;
+      }
+
+      function renderClients() {
+        const header = el("header", { class: "flex justify-between items-center" }, [
+          el("div", {}, [
+            el("h2", {
+              class: "text-2xl font-bold text-slate-900",
+              text: "Gestión de Clientes",
+            }),
+            el("p", {
+              class: "text-slate-500",
+              text: "Administra los servicios de cada desarrollo.",
+            }),
+          ]),
+          el(
+            "button",
+            {
+              class:
+                "bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 transition",
+              type: "button",
+              onclick: () => openClientModal(null),
+            },
+            [el("i", { "data-lucide": "plus", class: "w-5 h-5" }), "Nuevo Cliente"]
+          ),
+        ]);
+
+        const list = el("div", { class: "grid grid-cols-1 gap-4" });
+        for (const client of state.clients) {
+          const card = el(
+            "div",
+            {
+              class:
+                "bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-6 group",
+            },
+            [
+              el("div", { class: "flex-1" }, [
+                el("div", { class: "flex items-center gap-3" }, [
+                  el("h3", { class: "text-xl font-bold text-slate-800", text: client.name || "(sin nombre)" }),
+                  client.managesOwn
+                    ? el("span", {
+                        class:
+                          "text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-bold uppercase",
+                        text: "Autogestionado",
+                      })
+                    : null,
+                ]),
+                el(
+                  "a",
+                  {
+                    href: client.url || "#",
+                    target: "_blank",
+                    rel: "noreferrer",
+                    class:
+                      "text-indigo-600 text-sm hover:underline flex items-center gap-1 mt-1",
+                  },
+                  [
+                    el("span", { text: client.url || "(sin URL)" }),
+                    el("i", { "data-lucide": "external-link", class: "w-3 h-3" }),
+                  ]
+                ),
+              ]),
+              el("div", { class: "grid grid-cols-1 sm:grid-cols-3 gap-4 flex-[2]" }, [
+                expiryCell({ icon: "globe", label: "Dominio", value: client.domainExpiry }),
+                expiryCell({ icon: "server", label: "Hosting", value: client.hostingExpiry }),
+                expiryCell({ icon: "shield-check", label: "SSL", value: client.sslExpiry }),
+              ]),
+              el("div", { class: "flex gap-2" }, [
+                el(
+                  "button",
+                  {
+                    class:
+                      "p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition",
+                    type: "button",
+                    onclick: () => openClientModal(client),
+                    title: "Editar",
+                  },
+                  el("i", { "data-lucide": "edit-3", class: "w-[18px] h-[18px]" })
+                ),
+                el(
+                  "button",
+                  {
+                    class:
+                      "p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition",
+                    type: "button",
+                    onclick: () => deleteClient(client.id),
+                    title: "Eliminar",
+                  },
+                  el("i", { "data-lucide": "trash-2", class: "w-[18px] h-[18px]" })
+                ),
+              ]),
+            ]
+          );
+
+          list.appendChild(card);
+        }
+
+        const wrapper = el("div", { class: "space-y-6" }, [header, list]);
+        return wrapper;
+      }
+
+      function expiryCell({ icon, label, value }) {
+        const isExpired = value ? new Date(value) < new Date() : false;
+        return el("div", { class: "text-sm" }, [
+          el("p", { class: "text-slate-400 font-medium flex items-center gap-1" }, [
+            el("i", { "data-lucide": icon, class: "w-[14px] h-[14px]" }),
+            label,
+          ]),
+          el("p", {
+            class: isExpired ? "text-rose-600 font-bold" : "text-slate-700",
+            text: fmtDate(value),
+          }),
+        ]);
+      }
+
+      function renderReseller() {
+        return el(
+          "div",
+          { class: "max-w-4xl mx-auto py-10 space-y-8 text-center" },
+          el(
+            "div",
+            {
+              class:
+                "bg-white p-12 rounded-[2rem] shadow-xl border border-slate-200",
+            },
+            [
+              el(
+                "div",
+                {
+                  class:
+                    "w-20 h-20 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-6",
+                },
+                el("i", { "data-lucide": "calendar-clock", class: "w-10 h-10" })
+              ),
+              el("h2", {
+                class: "text-4xl font-black text-slate-900 mb-4",
+                text: "Renovación Revendedor",
+              }),
+              el("p", {
+                class: "text-slate-500 max-w-md mx-auto mb-8",
+                text:
+                  "Recordatorio: Tu hosting reseller de DonWeb vence anualmente en el mes de Abril.",
+              }),
+              el(
+                "div",
+                {
+                  class:
+                    "bg-slate-50 p-6 rounded-2xl inline-block border border-slate-100",
+                },
+                [
+                  el("p", {
+                    class:
+                      "text-sm text-slate-400 uppercase font-bold tracking-widest mb-1",
+                    text: "Costo Estimado",
+                  }),
+                  el("p", {
+                    class: "text-5xl font-mono font-bold text-indigo-600",
+                    text: `$${state.settings.hostingResellerPrice || 0}`,
+                  }),
+                ]
+              ),
+              el(
+                "div",
+                {
+                  class:
+                    "mt-12 p-4 bg-amber-50 rounded-xl border border-amber-100 flex items-start gap-4 text-left",
+                },
+                [
+                  el("i", {
+                    "data-lucide": "alert-triangle",
+                    class: "w-5 h-5 text-amber-500 shrink-0 mt-1",
+                  }),
+                  el("p", {
+                    class: "text-sm text-amber-800",
+                    text:
+                      "Asegúrate de tener fondos disponibles para la primera quincena de abril. DonWeb suele enviar la factura 10 días antes del vencimiento.",
+                  }),
+                ]
+              ),
+            ]
+          )
+        );
+      }
+
+      function renderSettings() {
+        const form = el(
+          "form",
+          {
+            class:
+              "bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-6",
+            onsubmit: (e) => updatePrices(e),
+          },
+          [
+            el("div", { class: "grid grid-cols-1 md:grid-cols-2 gap-6" }, [
+              inputField({
+                name: "reseller",
+                label: "Hosting Reseller (Anual)",
+                value: state.settings.hostingResellerPrice,
+              }),
+              inputField({
+                name: "domain",
+                label: "Dominio .com / .ar (Anual)",
+                value: state.settings.domainPrice,
+              }),
+              inputField({
+                name: "ssl",
+                label: "Certificado SSL (Anual)",
+                value: state.settings.sslPrice,
+              }),
+            ]),
+            el(
+              "div",
+              {
+                class:
+                  "pt-4 border-t border-slate-100 flex items-center justify-between",
+              },
+              [
+                el("span", {
+                  class: "text-xs text-slate-400 italic",
+                  text: `Última actualización: ${fmtDateTime(state.settings.lastUpdate)}`,
+                }),
+                el(
+                  "button",
+                  {
+                    type: "submit",
+                    class:
+                      "bg-slate-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-slate-800 transition",
+                  },
+                  "Guardar Valores"
+                ),
+              ]
+            ),
+          ]
+        );
+
+        return el("div", { class: "max-w-2xl space-y-8" }, [
+          el("header", {}, [
+            el("h2", { class: "text-2xl font-bold text-slate-900", text: "Precios y Configuración" }),
+            el("p", { class: "text-slate-500", text: "Ajusta los valores de mercado para tus estimaciones." }),
+          ]),
+          form,
+          el(
+            "div",
+            { class: "bg-indigo-50 p-6 rounded-2xl border border-indigo-100" },
+            [
+              el("h4", { class: "font-bold text-indigo-900 mb-2", text: "Nota sobre precios automáticos" }),
+              el("p", {
+                class: "text-sm text-indigo-700 leading-relaxed",
+                text:
+                  "Debido a que DonWeb no expone una API pública de precios, los valores deben actualizarse manualmente aquí.",
+              }),
+            ]
+          ),
+        ]);
+      }
+
+      function inputField({ name, label, value }) {
+        const wrapper = el("div");
+        wrapper.appendChild(
+          el("label", {
+            class: "block text-sm font-bold text-slate-700 mb-2",
+            text: label,
+          })
+        );
+        wrapper.appendChild(
+          el("input", {
+            name,
+            type: "number",
+            value: String(value ?? 0),
+            class:
+              "w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none",
+            placeholder: "0.00",
+          })
+        );
+        return wrapper;
+      }
+
+      function renderClientModal() {
+        const c = state.editingClient;
+
+        const overlay = el(
+          "div",
+          {
+            class:
+              "fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4",
+            onclick: (e) => {
+              if (e.target === overlay) closeClientModal();
+            },
+          },
+          el(
+            "div",
+            {
+              class:
+                "bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl overflow-hidden",
+            },
+            [
+              el(
+                "div",
+                {
+                  class:
+                    "p-8 border-b border-slate-100 flex justify-between items-center",
+                },
+                [
+                  el("h3", {
+                    class: "text-2xl font-bold text-slate-900",
+                    text: c ? "Editar Cliente" : "Nuevo Cliente",
+                  }),
+                  el(
+                    "button",
+                    {
+                      type: "button",
+                      class: "text-slate-400 hover:text-slate-600",
+                      onclick: closeClientModal,
+                    },
+                    el("i", { "data-lucide": "x", class: "w-7 h-7" })
+                  ),
+                ]
+              ),
+              el(
+                "form",
+                { class: "p-8 space-y-6", onsubmit: (e) => saveClient(e) },
+                [
+                  el("div", { class: "grid grid-cols-1 md:grid-cols-2 gap-6" }, [
+                    el("div", { class: "md:col-span-2" }, [
+                      el("label", {
+                        class: "block text-sm font-bold text-slate-700 mb-2",
+                        text: "Nombre del Cliente / Empresa",
+                      }),
+                      el("input", {
+                        name: "name",
+                        required: "true",
+                        value: c?.name || "",
+                        class:
+                          "w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none",
+                      }),
+                    ]),
+                    el("div", { class: "md:col-span-2" }, [
+                      el("label", {
+                        class: "block text-sm font-bold text-slate-700 mb-2",
+                        text: "URL del Sitio",
+                      }),
+                      el("input", {
+                        name: "url",
+                        value: c?.url || "",
+                        placeholder: "https://...",
+                        class:
+                          "w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none",
+                      }),
+                    ]),
+                    dateField({ name: "domainExpiry", label: "Vencimiento Dominio", value: c?.domainExpiry }),
+                    dateField({ name: "hostingExpiry", label: "Vencimiento Hosting", value: c?.hostingExpiry }),
+                    dateField({ name: "sslExpiry", label: "Vencimiento SSL", value: c?.sslExpiry }),
+                    el("div", { class: "flex items-center gap-2 pt-8" }, [
+                      el("input", {
+                        name: "managesOwn",
+                        type: "checkbox",
+                        class: "w-5 h-5 accent-indigo-600",
+                        id: "mown",
+                        ...(c?.managesOwn ? { checked: "true" } : {}),
+                      }),
+                      el("label", {
+                        for: "mown",
+                        class: "text-sm font-bold text-slate-700",
+                        text: "El cliente lo gestiona solo",
+                      }),
+                    ]),
+                    el("div", { class: "md:col-span-2" }, [
+                      el("label", {
+                        class: "block text-sm font-bold text-slate-700 mb-2",
+                        text: "Notas / Mejoras pendientes",
+                      }),
+                      el("textarea", {
+                        name: "notes",
+                        rows: "3",
+                        class:
+                          "w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none",
+                        placeholder:
+                          "Ideas para el futuro o pedidos de mejora...",
+                      }),
+                    ]),
+                  ]),
+                  el("div", { class: "pt-4 flex gap-3" }, [
+                    el(
+                      "button",
+                      {
+                        type: "button",
+                        onclick: closeClientModal,
+                        class:
+                          "flex-1 px-6 py-3 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition",
+                      },
+                      "Cancelar"
+                    ),
+                    el(
+                      "button",
+                      {
+                        type: "submit",
+                        class:
+                          "flex-[2] bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-indigo-700 transition",
+                      },
+                      "Guardar Cliente"
+                    ),
+                  ]),
+                ]
+              ),
+            ]
+          )
+        );
+
+        // fill notes after textarea exists
+        const notes = overlay.querySelector('textarea[name="notes"]');
+        if (notes) notes.value = c?.notes || "";
+        return overlay;
+      }
+
+      function dateField({ name, label, value }) {
+        return el("div", {}, [
+          el("label", {
+            class: "block text-sm font-bold text-slate-700 mb-2",
+            text: label,
+          }),
+          el("input", {
+            name,
+            type: "date",
+            value: value || "",
+            class:
+              "w-full p-3 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none",
+          }),
+        ]);
+      }
+
+      function openClientModal(client) {
+        state.editingClient = client;
+        state.modalOpen = true;
+        render();
+      }
+
+      function closeClientModal() {
+        state.modalOpen = false;
+        state.editingClient = null;
+        render();
+      }
+
+      function sendAlertEmail(alert) {
+        // Placeholder (EmailJS u otro proveedor)
+        alert(
+          `Simulación: Se enviaría un email avisando que el ${alert.type} de ${alert.clientName} vence en ${alert.diffDays} días.`
+        );
+      }
+
+      const shouldStartFirebase =
+        location.protocol !== "file:" && isValidFirebaseConfig(firebaseConfig);
+
+      let auth = null;
+      let db = null;
+
+      async function initAuth() {
+        if (!auth) return;
+        if (initialAuthToken) await signInWithCustomToken(auth, initialAuthToken);
+        else await signInAnonymously(auth);
+      }
+
+      function clientsCollectionRef() {
+        if (!db) throw new Error("Firestore no inicializado");
+        return collection(db, "artifacts", appId, "public", "data", "clients");
+      }
+
+      function settingsDocRef() {
+        if (!db) throw new Error("Firestore no inicializado");
+        return doc(db, "artifacts", appId, "public", "data", "config", "global");
+      }
+
+      async function saveClient(e) {
+        e.preventDefault();
+        if (!db) {
+          alert("Firestore no está inicializado. Revisa la configuración de Firebase.");
+          return;
+        }
+        const form = e.target;
+        const fd = new FormData(form);
+        const clientData = {
+          name: fd.get("name")?.toString().trim() || "",
+          url: fd.get("url")?.toString().trim() || "",
+          domainExpiry: fd.get("domainExpiry")?.toString() || "",
+          hostingExpiry: fd.get("hostingExpiry")?.toString() || "",
+          sslExpiry: fd.get("sslExpiry")?.toString() || "",
+          notes: fd.get("notes")?.toString() || "",
+          managesOwn: fd.get("managesOwn") === "on",
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (state.editingClient?.id) {
+          await updateDoc(
+            doc(db, "artifacts", appId, "public", "data", "clients", state.editingClient.id),
+            clientData
+          );
+        } else {
+          await addDoc(clientsCollectionRef(), clientData);
+        }
+
+        closeClientModal();
+      }
+
+      async function deleteClient(id) {
+        if (!id) return;
+        if (!db) {
+          alert("Firestore no está inicializado. Revisa la configuración de Firebase.");
+          return;
+        }
+        if (confirm("¿Estás seguro de eliminar este cliente?")) {
+          await deleteDoc(doc(db, "artifacts", appId, "public", "data", "clients", id));
+        }
+      }
+
+      async function updatePrices(e) {
+        e.preventDefault();
+        if (!db) {
+          alert("Firestore no está inicializado. Revisa la configuración de Firebase.");
+          return;
+        }
+        const fd = new FormData(e.target);
+        const payload = {
+          hostingResellerPrice: Number(fd.get("reseller") || 0),
+          domainPrice: Number(fd.get("domain") || 0),
+          sslPrice: Number(fd.get("ssl") || 0),
+          lastUpdate: new Date().toISOString(),
+        };
+
+        // setDoc para crear el doc si no existe
+        await setDoc(settingsDocRef(), payload, { merge: true });
+      }
+
+      render();
+
+      if (shouldStartFirebase) {
+        // --- Firebase setup ---
+        const firebaseApp = initializeApp(firebaseConfig);
+        auth = getAuth(firebaseApp);
+        db = getFirestore(firebaseApp);
+
+        initAuth().catch((err) => {
+          root.textContent = "";
+          root.appendChild(
+            el(
+              "div",
+              { class: "min-h-screen bg-slate-50 flex items-center justify-center p-6" },
+              el(
+                "div",
+                {
+                  class:
+                    "max-w-2xl w-full bg-white p-8 rounded-3xl shadow-xl border border-slate-200",
+                },
+                [
+                  el("h1", {
+                    class: "text-2xl font-bold text-slate-900 mb-4",
+                    text: "Error de autenticación",
+                  }),
+                  el("p", { class: "text-slate-600", text: err?.message || String(err) }),
+                ]
+              )
+            )
+          );
+        });
+
+        onAuthStateChanged(auth, (user) => {
+          state.user = user;
+          render();
+          if (!user) return;
+
+          onSnapshot(
+            clientsCollectionRef(),
+            (snapshot) => {
+              state.clients = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+              render();
+            },
+            (err) => console.error("Error fetching clients:", err)
+          );
+
+          onSnapshot(
+            settingsDocRef(),
+            (snap) => {
+              if (snap.exists()) {
+                state.settings = { ...state.settings, ...snap.data() };
+                render();
+              }
+            },
+            (err) => console.error("Error fetching settings:", err)
+          );
+        });
+      }
+    </script>
+  </body>
+</html>
